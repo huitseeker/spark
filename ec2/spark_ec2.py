@@ -182,6 +182,10 @@ def parse_args():
         "--spot-price", metavar="PRICE", type="float",
         help="If specified, launch slaves as spot instances with the given " +
              "maximum price (in dollars)")
+    parser.add_option("--cluster-type", type="choice", metavar="TYPE",
+        choices=["mesos", "standalone"], default="standalone",
+        help="'mesos' for a Mesos cluster, 'standalone' for a standalone " +
+             "Spark cluster (default: standalone)")
     parser.add_option(
         "--ganglia", action="store_true", default=True,
         help="Setup Ganglia monitoring on cluster (default: %default). NOTE: " +
@@ -225,6 +229,9 @@ def parse_args():
     (opts, args) = parser.parse_args()
     if len(args) != 2:
         parser.print_help()
+        sys.exit(1)
+    if opts.cluster_type not in ["mesos", "standalone"] and action == "launch":
+        print >> stderr, ("ERROR: Invalid cluster type: " + opts.cluster_type)
         sys.exit(1)
     (action, cluster_name) = args
 
@@ -346,7 +353,8 @@ def get_spark_ami(opts):
 
 # Launch a cluster of the given name, by setting up its security groups,
 # and then starting new instances in them.
-# Returns a tuple of EC2 reservation objects for the master and slaves
+# Returns a tuple of EC2 reservation objects for the master, slaves, and
+# zookeeper instances (in that order).
 # Fails if there already instances running in the cluster's groups.
 def launch_cluster(conn, opts, cluster_name):
     if opts.identity_file is None:
@@ -364,11 +372,13 @@ def launch_cluster(conn, opts, cluster_name):
     print "Setting up security groups..."
     master_group = get_or_make_group(conn, cluster_name + "-master", opts.vpc_id)
     slave_group = get_or_make_group(conn, cluster_name + "-slaves", opts.vpc_id)
+    zoo_group = get_or_make_group(conn, cluster_name + "-zoo", opts.vpc_id)
     authorized_address = opts.authorized_address
     if master_group.rules == []:  # Group was just now created
         if opts.vpc_id is None:
             master_group.authorize(src_group=master_group)
             master_group.authorize(src_group=slave_group)
+            master_group.authorize(src_group=zoo_group)
         else:
             master_group.authorize(ip_protocol='icmp', from_port=-1, to_port=-1,
                                    src_group=master_group)
@@ -382,6 +392,12 @@ def launch_cluster(conn, opts, cluster_name):
                                    src_group=slave_group)
             master_group.authorize(ip_protocol='udp', from_port=0, to_port=65535,
                                    src_group=slave_group)
+            master_group.authorize(ip_protocol='icmp', from_port=-1, to_port=-1,
+                                   src_group=zoo_group)
+            master_group.authorize(ip_protocol='tcp', from_port=0, to_port=65535,
+                                   src_group=zoo_group)
+            master_group.authorize(ip_protocol='udp', from_port=0, to_port=65535,
+                                   src_group=zoo_group)
         master_group.authorize('tcp', 22, 22, authorized_address)
         master_group.authorize('tcp', 8080, 8081, authorized_address)
         master_group.authorize('tcp', 18080, 18080, authorized_address)
@@ -389,6 +405,8 @@ def launch_cluster(conn, opts, cluster_name):
         master_group.authorize('tcp', 50030, 50030, authorized_address)
         master_group.authorize('tcp', 50070, 50070, authorized_address)
         master_group.authorize('tcp', 60070, 60070, authorized_address)
+        if opts.cluster_type == "mesos":
+            master_group.authorize('tcp', 38090, 38090, '0.0.0.0/0')
         master_group.authorize('tcp', 4040, 4045, authorized_address)
         if opts.ganglia:
             master_group.authorize('tcp', 5080, 5080, authorized_address)
@@ -396,6 +414,7 @@ def launch_cluster(conn, opts, cluster_name):
         if opts.vpc_id is None:
             slave_group.authorize(src_group=master_group)
             slave_group.authorize(src_group=slave_group)
+            slave_group.authorize(src_group=zoo_group)
         else:
             slave_group.authorize(ip_protocol='icmp', from_port=-1, to_port=-1,
                                   src_group=master_group)
@@ -409,19 +428,52 @@ def launch_cluster(conn, opts, cluster_name):
                                   src_group=slave_group)
             slave_group.authorize(ip_protocol='udp', from_port=0, to_port=65535,
                                   src_group=slave_group)
+            slave_group.authorize(ip_protocol='icmp', from_port=-1, to_port=-1,
+                                  src_group=zoo_group)
+            slave_group.authorize(ip_protocol='tcp', from_port=0, to_port=65535,
+                                  src_group=zoo_group)
+            slave_group.authorize(ip_protocol='udp', from_port=0, to_port=65535,
+                                  src_group=zoo_group)
         slave_group.authorize('tcp', 22, 22, authorized_address)
         slave_group.authorize('tcp', 8080, 8081, authorized_address)
         slave_group.authorize('tcp', 50060, 50060, authorized_address)
         slave_group.authorize('tcp', 50075, 50075, authorized_address)
         slave_group.authorize('tcp', 60060, 60060, authorized_address)
         slave_group.authorize('tcp', 60075, 60075, authorized_address)
+    if zoo_group.rules == []: # Group was just now created
+        if opts.vpc_id is None:
+            zoo_group.authorize(src_group=master_group)
+            zoo_group.authorize(src_group=slave_group)
+            zoo_group.authorize(src_group=zoo_group)
+        else:
+            zoo_group.authorize(ip_protocol='icmp', from_port=-1, to_port=-1,
+                                  src_group=master_group)
+            zoo_group.authorize(ip_protocol='tcp', from_port=0, to_port=65535,
+                                  src_group=master_group)
+            zoo_group.authorize(ip_protocol='udp', from_port=0, to_port=65535,
+                                  src_group=master_group)
+            zoo_group.authorize(ip_protocol='icmp', from_port=-1, to_port=-1,
+                                  src_group=slave_group)
+            zoo_group.authorize(ip_protocol='tcp', from_port=0, to_port=65535,
+                                  src_group=slave_group)
+            zoo_group.authorize(ip_protocol='udp', from_port=0, to_port=65535,
+                                  src_group=slave_group)
+            zoo_group.authorize(ip_protocol='icmp', from_port=-1, to_port=-1,
+                                  src_group=zoo_group)
+            zoo_group.authorize(ip_protocol='tcp', from_port=0, to_port=65535,
+                                  src_group=zoo_group)
+            zoo_group.authorize(ip_protocol='udp', from_port=0, to_port=65535,
+                                  src_group=zoo_group)
+        zoo_group.authorize('tcp', 22, 22, authorized_address)
+        zoo_group.authorize('tcp', 2181, 2181, authorized_address)
+        zoo_group.authorize('tcp', 2888, 2888, authorized_address)
+        zoo_group.authorize('tcp', 3888, 3888, authorized_address)
 
     # Check if instances are already running in our groups
-    existing_masters, existing_slaves = get_existing_cluster(conn, opts, cluster_name,
-                                                             die_on_error=False)
-    if existing_slaves or (existing_masters and not opts.use_existing_master):
+    existing_masters, existing_slaves, existing_zoo = get_existing_cluster(conn, opts, cluster_name, die_on_error=False)
+    if existing_slaves or (existing_masters and not opts.use_existing_master) or existing_zoo:
         print >> stderr, ("ERROR: There are already instances running in " +
-                          "group %s or %s" % (master_group.name, slave_group.name))
+                          "group %s, %s or %s" % (master_group.name, slave_group.name, zoo_group.name))
         sys.exit(1)
 
     # Figure out Spark AMI
@@ -515,9 +567,9 @@ def launch_cluster(conn, opts, cluster_name):
             print "Canceling spot instance requests"
             conn.cancel_spot_instance_requests(my_req_ids)
             # Log a warning if any of these requests actually launched instances:
-            (master_nodes, slave_nodes) = get_existing_cluster(
+            (master_nodes, slave_nodes, zoo_nodes) = get_existing_cluster(
                 conn, opts, cluster_name, die_on_error=False)
-            running = len(master_nodes) + len(slave_nodes)
+            running = len(master_nodes) + len(slave_nodes) + len(zoo_nodes)
             if running:
                 print >> stderr, ("WARNING: %d instances are still running" % running)
             sys.exit(0)
@@ -572,6 +624,8 @@ def launch_cluster(conn, opts, cluster_name):
         master_nodes = master_res.instances
         print "Launched master in %s, regid = %s" % (zone, master_res.id)
 
+        zoo_nodes = []
+
     # This wait time corresponds to SPARK-4983
     print "Waiting for AWS to propagate instance metadata..."
     time.sleep(5)
@@ -586,11 +640,12 @@ def launch_cluster(conn, opts, cluster_name):
             value='{cn}-slave-{iid}'.format(cn=cluster_name, iid=slave.id))
 
     # Return all the instances
-    return (master_nodes, slave_nodes)
+    return (master_nodes, slave_nodes, zoo_nodes)
 
 
 # Get the EC2 instances in an existing cluster if available.
-# Returns a tuple of lists of EC2 instance objects for the masters and slaves
+# Returns a tuple of lists of EC2 instance objects for the masters, slaves
+# and zookeeper nodes (in that order)
 
 
 def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
@@ -598,6 +653,7 @@ def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
     reservations = conn.get_all_reservations()
     master_nodes = []
     slave_nodes = []
+    zoo_nodes = []
     for res in reservations:
         active = [i for i in res.instances if is_active(i)]
         for inst in active:
@@ -606,10 +662,12 @@ def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
                 master_nodes.append(inst)
             elif (cluster_name + "-slaves") in group_names:
                 slave_nodes.append(inst)
-    if any((master_nodes, slave_nodes)):
-        print "Found %d master(s), %d slaves" % (len(master_nodes), len(slave_nodes))
+            elif (cluster_name + "-zoo") in group_names:
+                zoo_nodes.append(inst)
+    if any((master_nodes, slave_nodes, zoo_nodes)):
+        print "Found %d master(s), %d slaves, %d ZooKeeper nodes" % (len(master_nodes), len(slave_nodes), len(zoo_nodes))
     if master_nodes != [] or not die_on_error:
-        return (master_nodes, slave_nodes)
+        return (master_nodes, slave_nodes, zoo_nodes)
     else:
         if master_nodes == [] and slave_nodes != []:
             print >> sys.stderr, "ERROR: Could not find master in group " + cluster_name + "-master"
@@ -622,7 +680,7 @@ def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
 # or started EC2 cluster.
 
 
-def setup_cluster(conn, master_nodes, slave_nodes, opts, deploy_ssh_key):
+def setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, deploy_ssh_key):
     master = master_nodes[0].public_dns_name
     if deploy_ssh_key:
         print "Generating cluster's SSH key on master..."
@@ -638,8 +696,12 @@ def setup_cluster(conn, master_nodes, slave_nodes, opts, deploy_ssh_key):
             print slave.public_dns_name
             ssh_write(slave.public_dns_name, opts, ['tar', 'x'], dot_ssh_tar)
 
-    modules = ['spark', 'ephemeral-hdfs', 'persistent-hdfs',
-               'mapreduce', 'spark-standalone', 'tachyon']
+    if opts.cluster_type == "mesos":
+      modules = ['spark', 'shark', 'ephemeral-hdfs', 'persistent-hdfs',
+                 'mapreduce', 'mesos']
+    elif opts.cluster_type == "standalone":
+      modules = ['spark', 'shark', 'ephemeral-hdfs', 'persistent-hdfs',
+                 'mapreduce', 'spark-standalone', 'tachyon']
 
     if opts.hadoop_major_version == "1":
         modules = filter(lambda x: x != "mapreduce", modules)
@@ -664,6 +726,7 @@ def setup_cluster(conn, master_nodes, slave_nodes, opts, deploy_ssh_key):
         opts=opts,
         master_nodes=master_nodes,
         slave_nodes=slave_nodes,
+        zoo_nodes=zoo_nodes,
         modules=modules
     )
 
@@ -672,10 +735,19 @@ def setup_cluster(conn, master_nodes, slave_nodes, opts, deploy_ssh_key):
     print "Done!"
 
 
+def setup_mesos_cluster(master, opts):
+  ssh(master, opts, "chmod u+x mesos-ec2/setup")
+  ssh(master, opts, "mesos-ec2/setup %s %s %s %s" %
+      ("generic", "none", "master", opts.swap))
+
+
 def setup_spark_cluster(master, opts):
     ssh(master, opts, "chmod u+x spark-ec2/setup.sh")
     ssh(master, opts, "spark-ec2/setup.sh")
-    print "Spark standalone cluster started at http://%s:8080" % master
+    if opts.cluster_type == "mesos":
+        print "Mesos cluster started at http://%s:8080" % master
+    elif opts.cluster_type == "standalone":
+        print "Spark standalone cluster started at http://%s:8080" % master
 
     if opts.ganglia:
         print "Ganglia started at http://%s:5080/ganglia" % master
@@ -827,7 +899,7 @@ def get_num_disks(instance_type):
 # script to be run on that instance to copy them to other nodes.
 #
 # root_dir should be an absolute path to the directory with the files we want to deploy.
-def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, modules):
+def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes, modules):
     active_master = master_nodes[0].public_dns_name
 
     num_disks = get_num_disks(opts.instance_type)
@@ -840,7 +912,16 @@ def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, modules):
             mapred_local_dirs += ",/mnt%d/hadoop/mrlocal" % i
             spark_local_dirs += ",/mnt%d/spark" % i
 
-    cluster_url = "%s:7077" % active_master
+    if zoo_nodes != []:
+      zoo_list = '\n'.join([i.public_dns_name for i in zoo_nodes])
+      cluster_url = "zoo://" + ",".join(
+          ["%s:2181/mesos" % i.public_dns_name for i in zoo_nodes])
+    elif opts.cluster_type == "mesos":
+      zoo_list = "NONE"
+      cluster_url = "%s:5050" % active_master
+    elif opts.cluster_type == "standalone":
+      zoo_list = "NONE"
+      cluster_url = "%s:7077" % active_master
 
     if "." in opts.spark_version:
         # Pre-built Spark deploy
@@ -853,6 +934,7 @@ def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, modules):
         "master_list": '\n'.join([i.public_dns_name for i in master_nodes]),
         "active_master": active_master,
         "slave_list": '\n'.join([i.public_dns_name for i in slave_nodes]),
+        "zoo_list": zoo_list,
         "cluster_url": cluster_url,
         "hdfs_data_dirs": hdfs_data_dirs,
         "mapred_local_dirs": mapred_local_dirs,
@@ -1040,21 +1122,21 @@ def real_main():
             print >> sys.stderr, "ERROR: You have to start at least 1 slave"
             sys.exit(1)
         if opts.resume:
-            (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name)
+            (master_nodes, slave_nodes, zoo_nodes) = get_existing_cluster(conn, opts, cluster_name)
         else:
-            (master_nodes, slave_nodes) = launch_cluster(conn, opts, cluster_name)
+            (master_nodes, slave_nodes, zoo_nodes) = launch_cluster(conn, opts, cluster_name)
         wait_for_cluster_state(
             conn=conn,
             opts=opts,
-            cluster_instances=(master_nodes + slave_nodes),
+            cluster_instances=(master_nodes + slave_nodes + zoo_nodes),
             cluster_state='ssh-ready'
         )
-        setup_cluster(conn, master_nodes, slave_nodes, opts, True)
+        setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, True)
 
     elif action == "destroy":
         print "Are you sure you want to destroy the cluster %s?" % cluster_name
         print "The following instances will be terminated:"
-        (master_nodes, slave_nodes) = get_existing_cluster(
+        (master_nodes, slave_nodes, zoo_nodes) = get_existing_cluster(
             conn, opts, cluster_name, die_on_error=False)
         for inst in master_nodes + slave_nodes:
             print "> %s" % inst.public_dns_name
@@ -1068,15 +1150,18 @@ def real_main():
             print "Terminating slaves..."
             for inst in slave_nodes:
                 inst.terminate()
+            print "Terminating zoo..."
+            for inst in zoo_nodes:
+                inst.terminate()
 
             # Delete security groups as well
             if opts.delete_groups:
                 print "Deleting security groups (this will take some time)..."
-                group_names = [cluster_name + "-master", cluster_name + "-slaves"]
+                group_names = [cluster_name + "-master", cluster_name + "-slaves", cluster_name + "-zoo"]
                 wait_for_cluster_state(
                     conn=conn,
                     opts=opts,
-                    cluster_instances=(master_nodes + slave_nodes),
+                    cluster_instances=(master_nodes + slave_nodes + zoo_nodes),
                     cluster_state='terminated'
                 )
                 attempt = 1
@@ -1119,7 +1204,7 @@ def real_main():
                     print "Try re-running in a few minutes."
 
     elif action == "login":
-        (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name)
+        (master_nodes, slave_nodes, zoo_nodes) = get_existing_cluster(conn, opts, cluster_name)
         master = master_nodes[0].public_dns_name
         print "Logging into master " + master + "..."
         proxy_opt = []
@@ -1134,7 +1219,7 @@ def real_main():
             cluster_name + " slaves?\n" +
             "Reboot cluster slaves " + cluster_name + " (y/N): ")
         if response == "y":
-            (master_nodes, slave_nodes) = get_existing_cluster(
+            (master_nodes, slave_nodes, zoo_nodes) = get_existing_cluster(
                 conn, opts, cluster_name, die_on_error=False)
             print "Rebooting slaves..."
             for inst in slave_nodes:
@@ -1143,7 +1228,7 @@ def real_main():
                     inst.reboot()
 
     elif action == "get-master":
-        (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name)
+        (master_nodes, slave_nodes, zoo_nodes) = get_existing_cluster(conn, opts, cluster_name)
         print master_nodes[0].public_dns_name
 
     elif action == "stop":
@@ -1162,7 +1247,7 @@ def real_main():
                 if inst.state not in ["shutting-down", "terminated"]:
                     inst.stop()
             print "Stopping slaves..."
-            for inst in slave_nodes:
+            for inst in slave_nodes + zoo_nodes:
                 if inst.state not in ["shutting-down", "terminated"]:
                     if inst.spot_instance_request_id:
                         inst.terminate()
@@ -1170,7 +1255,11 @@ def real_main():
                         inst.stop()
 
     elif action == "start":
-        (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name)
+        (master_nodes, slave_nodes, zoo_nodes) = get_existing_cluster(conn, opts, cluster_name)
+        print "Starting zoo..."
+        for inst in zoo_nodes:
+            if inst.state not in ["shutting-down", "terminated"]:
+                inst.start()
         print "Starting slaves..."
         for inst in slave_nodes:
             if inst.state not in ["shutting-down", "terminated"]:
@@ -1182,10 +1271,10 @@ def real_main():
         wait_for_cluster_state(
             conn=conn,
             opts=opts,
-            cluster_instances=(master_nodes + slave_nodes),
+            cluster_instances=(master_nodes + slave_nodes + zoo_nodes),
             cluster_state='ssh-ready'
         )
-        setup_cluster(conn, master_nodes, slave_nodes, opts, False)
+        setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, False)
 
     else:
         print >> stderr, "Invalid action: %s" % action
