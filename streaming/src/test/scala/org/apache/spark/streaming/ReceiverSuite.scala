@@ -244,7 +244,7 @@ class ReceiverSuite extends TestSuiteBase with Timeouts with Serializable {
     testBlockGeneratorCongestion(dropStrategy, 100, 1001, 20)
   }
 
-  test("block generator sampling"){
+  ignore("block generator sampling"){
     val samplingStrategy = new SamplingCongestionStrategy()
     testBlockGeneratorCongestion(samplingStrategy, 100, 1001, 20, 0.07)
   }
@@ -252,7 +252,7 @@ class ReceiverSuite extends TestSuiteBase with Timeouts with Serializable {
   // This one needs to be left in ignore mode because of the sensitivity
   // of pushback to the 'grace time' in the delay induced by a large amount of data
   // (see `PushBackCongestionStrategy.restrictCurrentBuffer`)
-   test("block generator pushback") {
+  ignore("block generator pushback") {
     val pushbackStrategy = new PushBackCongestionStrategy(100)
     testBlockGeneratorCongestion(pushbackStrategy, 100, 1001, 20)
   }
@@ -463,4 +463,3 @@ class FakeReceiver(sendData: Boolean = false) extends Receiver[Int](StorageLevel
     onStopCalled = false
   }
 }
-
