@@ -173,7 +173,7 @@ class ReceiverSuite extends TestSuiteBase with Timeouts with Serializable {
     )
     val blockGenerator = new BlockGenerator(blockGeneratorListener, 1, conf)
 
-    val waitTime = expectedBlocks * blockIntervalMs
+    val waitTime = expectedBlocks * blockIntervalMs + (blockIntervalMs / 2)
     val expectedMessages = maxRatePerBlock * expectedBlocks
     val expectedMessagesPerBlock = maxRatePerBlock
     val generatedData = new ArrayBuffer[Int]

@@ -146,8 +146,7 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
     for {(sId, speed) <- streamIdToElemsPerBatch
         info <- receiverInfo.get(sId)
         eP <- Option(info.endpoint)}
-    // A 'floor', so as not to overestimate elements per block
-    if (speed > 0) eP.send(BatchProcessingSpeedInfo(batchTime, math.floor( speed * ratio ).toInt))
+    if (speed > 0) eP.send(BatchProcessingSpeedInfo(batchTime, math.round( speed * ratio )))
   }
 
   /** Register a receiver */
