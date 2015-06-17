@@ -137,7 +137,7 @@ class ReceiverTracker(ssc: StreamingContext, skipReceiverLaunch: Boolean = false
 
   /**
    * Updates a receiver on the processing speed of its stream, counted in elements
-   * processed per batch interval.
+   * processed per block interval.
    */
   def refreshLatestSpeeds(batchTime: Time, streamIdToElemsPerBatch: Map[Int, Long]){
     val blockIntervalMs = ssc.conf.getTimeAsMs("spark.streaming.blockInterval", "200ms")
