@@ -61,26 +61,6 @@ private[streaming] class ReceiverSupervisorImpl(
     }
   }
 
-  protected val congestionStrategy: CongestionStrategy = {
-    val strategyNameOption = env.conf.getOption("spark.streaming.receiver.congestionStrategy")
-
-    strategyNameOption.map {
-      case "ignore" => new IgnoreCongestionStrategy()
-      case "pushback" => new PushBackCongestionStrategy(blockGenerator.blockIntervalMs)
-      case "drop" => new DropCongestionStrategy()
-      case "sampling" => new SamplingCongestionStrategy()
-      case "reactive" => receiver match {
-        case r: ReactiveReceiver[_] => r.reactiveCongestionStrategy
-        case _ => throw new SparkException(
-          "Cannot enable reactive congestion strategy on a Receiver that does not extend" +
-          " ReactiveReceiver. See documentation for more details.")
-      }
-      case _ => new IgnoreCongestionStrategy()
-    }.getOrElse {
-     new IgnoreCongestionStrategy()
-    }
-  }
-
   /** Remote RpcEndpointRef for the ReceiverTracker */
   private val trackerEndpoint = RpcUtils.makeDriverRef("ReceiverTracker", env.conf, env.rpcEnv)
 
@@ -124,6 +104,26 @@ private[streaming] class ReceiverSupervisorImpl(
       pushArrayBuffer(arrayBuffer, None, Some(blockId))
     }
   }, streamId, env.conf)
+
+  protected val congestionStrategy: CongestionStrategy = {
+    val strategyNameOption = env.conf.getOption("spark.streaming.receiver.congestionStrategy")
+
+    strategyNameOption.map {
+      case "ignore" => new IgnoreCongestionStrategy()
+      case "pushback" => new PushBackCongestionStrategy(blockGenerator.blockIntervalMs)
+      case "drop" => new DropCongestionStrategy()
+      case "sampling" => new SamplingCongestionStrategy()
+      case "reactive" => receiver match {
+        case r: ReactiveReceiver[_] => r.reactiveCongestionStrategy
+        case _ => throw new SparkException(
+          "Cannot enable reactive congestion strategy on a Receiver that does not extend" +
+          " ReactiveReceiver. See documentation for more details.")
+      }
+      case _ => new IgnoreCongestionStrategy()
+    }.getOrElse {
+     new IgnoreCongestionStrategy()
+    }
+  }
 
   /** Push a single record of received data into block generator. */
   def pushSingle(data: Any) {
