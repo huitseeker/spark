@@ -210,8 +210,8 @@ class ReceiverSuite extends TestSuiteBase with Timeouts with Serializable {
     // which throttling code does not control. Therefore, test against the average.
     val minExpectedMessagesPerBlock = expectedMessagesPerBlock -
       errorBound * expectedMessagesPerBlock
-    val maxExpectedMessagesPerBlock = expectedMessagesPerBlock
-      + errorBound * expectedMessagesPerBlock
+    val maxExpectedMessagesPerBlock = expectedMessagesPerBlock +
+      errorBound * expectedMessagesPerBlock
     val receivedBlockSizes = recordedBlocks.map { _.size }.mkString(",")
 
     // the first and last block may be incomplete, so we slice them out
