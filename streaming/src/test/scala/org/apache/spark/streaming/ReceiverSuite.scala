@@ -191,7 +191,10 @@ class ReceiverSuite extends TestSuiteBase with Timeouts with Serializable {
 
     val recordedBlocks = blockGeneratorListener.arrayBuffers
     val recordedData = recordedBlocks.flatten
-    assert(blockGeneratorListener.arrayBuffers.size > 0, "No blocks received")
+    val rsize = recordedBlocks.size
+    assert(rsize > 0, "No blocks received")
+    assert(rsize >= expectedBlocks && rsize <= expectedBlocks + 1,
+           s"Received ${recordedBlocks.size} blocks instead of the expected $expectedBlocks")
     if(testIdentity){
           assert(recordedData.toSet === generatedData.toSet, "Received data not same")
     }
